@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reproagent"
+version = "0.1.0"
+description = "LLM agent that runs nf-core Nextflow pipelines and proves how byte-reproducible the result is."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "ReproAgent contributors" }]
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.5",
+    "typer>=0.12",
+    "langgraph>=0.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[project.scripts]
+reproagent = "reproagent.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reproagent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008"] # Typer uses Option calls as its documented declaration API.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
