@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import gzip
+import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
+from urllib import request as urlrequest
 
 from pydantic import BaseModel, Field
 
@@ -19,6 +22,7 @@ PIPELINES = {
     "nf-core/sarek": {"description": "Germline and somatic variant calling", "revision": "3.5.1"},
     "nf-core/fetchngs": {"description": "Download public sequencing data", "revision": "1.12.0"},
 }
+SYSTEM_PROMPT = "Select exactly one registered nf-core pipeline. Return JSON with pipeline, reason, and params. Never invent input paths, revisions, or provenance."
 
 
 class RunPlan(BaseModel):
@@ -35,11 +39,23 @@ def list_pipelines() -> dict[str, dict[str, str]]:
 
 def inspect_input(path: str | Path) -> dict[str, Any]:
     p = Path(path)
-    result: dict[str, Any] = {"path": str(p), "file_type": None, "size_bytes": None, "sha256": None, "read_count": None}
+    result: dict[str, Any] = {
+        "path": str(p),
+        "file_type": None,
+        "size_bytes": None,
+        "sha256": None,
+        "read_count": None,
+    }
     if not p.is_file():
         log.warning("cannot inspect missing input: %s", p)
         return result
-    result.update(file_type="fastq" if p.name.lower().endswith((".fastq", ".fq", ".fastq.gz", ".fq.gz")) else p.suffix.lstrip(".") or "unknown", size_bytes=p.stat().st_size, sha256=sha256_file(p))
+    result.update(
+        file_type="fastq"
+        if p.name.lower().endswith((".fastq", ".fq", ".fastq.gz", ".fq.gz"))
+        else p.suffix.lstrip(".") or "unknown",
+        size_bytes=p.stat().st_size,
+        sha256=sha256_file(p),
+    )
     if result["file_type"] == "fastq":
         opener = gzip.open if p.suffix.lower() == ".gz" else open
         try:
@@ -50,7 +66,44 @@ def inspect_input(path: str | Path) -> dict[str, Any]:
     return result
 
 
-def plan_run(request: str) -> RunPlan:
+def plan_run(request: str, model: str = "rule-based-v1", temperature: float = 0.0) -> RunPlan:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if model != "rule-based-v1" and api_key:
+        payload = json.dumps(
+            {
+                "model": model,
+                "temperature": temperature,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT + " Registry: " + json.dumps(PIPELINES),
+                    },
+                    {"role": "user", "content": request},
+                ],
+            }
+        ).encode()
+        req = urlrequest.Request(
+            os.getenv("REPROAGENT_LLM_URL", "https://api.openai.com/v1/chat/completions"),
+            data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=60) as response:  # noqa: S310 - configured HTTPS API
+                raw = json.loads(response.read())
+            choice = json.loads(raw["choices"][0]["message"]["content"])
+            pipeline = choice["pipeline"]
+            if pipeline not in PIPELINES:
+                raise ValueError(f"unregistered pipeline: {pipeline}")
+            return RunPlan(
+                pipeline=pipeline,
+                revision=PIPELINES[pipeline]["revision"],
+                params=choice.get("params", {}),
+                reason=choice["reason"],
+                candidates=list(PIPELINES),
+            )
+        except Exception as exc:  # API failures must retain deterministic operability
+            log.warning("LLM planner failed; using deterministic fallback: %s", exc)
     lowered = request.lower()
     if any(word in lowered for word in ("variant", "sarek", "somatic", "germline")):
         choice, reason = "nf-core/sarek", "request asks for variant analysis"
@@ -59,7 +112,13 @@ def plan_run(request: str) -> RunPlan:
     else:
         choice, reason = "nf-core/rnaseq", "request most closely matches RNA-seq analysis"
     entry = PIPELINES[choice]
-    return RunPlan(pipeline=choice, revision=entry["revision"], params={}, reason=reason, candidates=list(PIPELINES))
+    return RunPlan(
+        pipeline=choice,
+        revision=entry["revision"],
+        params={},
+        reason=reason,
+        candidates=list(PIPELINES),
+    )
 
 
 def execute(plan: RunPlan, outdir: str | Path, params_file: str | Path) -> RunResult:

@@ -27,24 +27,26 @@ class ReplayResult(BaseModel):
     command: str
 
 
-def verify_inputs(manifest: RunManifest) -> bool:
+def verify_inputs(manifest: RunManifest, base_dir: Path | None = None) -> bool:
     ok = True
     for item in manifest.inputs:
         p = Path(item.path)
+        if not p.is_absolute() and base_dir:
+            p = base_dir / p
         if not p.is_file():
             log.warning("input missing at replay time: %s", item.path)
             ok = False
             continue
-        if item.sha256 and not _checksum_matches(item):
+        if item.sha256 and not _checksum_matches(item, p):
             log.warning("input checksum mismatch: %s", item.path)
             ok = False
     return ok
 
 
-def _checksum_matches(item: InputFile) -> bool:
+def _checksum_matches(item: InputFile, path: Path | None = None) -> bool:
     from reproagent.diff.compare import sha256_file
 
-    return sha256_file(Path(item.path)) == (item.sha256 or "")
+    return sha256_file(path or Path(item.path)) == (item.sha256 or "")
 
 
 def replay_run(
@@ -53,15 +55,37 @@ def replay_run(
     runner_fn=runner.run_nextflow,
 ) -> ReplayResult:
     manifest = load_manifest(manifest_path)
-    log.info("replaying run %s (pipeline=%s revision=%s)", manifest.run_id, manifest.pipeline.name, manifest.pipeline.revision)
+    log.info(
+        "replaying run %s (pipeline=%s revision=%s)",
+        manifest.run_id,
+        manifest.pipeline.name,
+        manifest.pipeline.revision,
+    )
 
-    inputs_ok = verify_inputs(manifest)
+    manifest_dir = Path(manifest_path).resolve().parent
+    inputs_ok = verify_inputs(manifest, manifest_dir)
     if not inputs_ok:
-        log.warning("replay proceeding despite input problems; results may differ")
+        raise ValueError("manifest bundle inputs are missing or fail checksum validation")
 
     with TemporaryDirectory(prefix="reproagent-replay-") as tmp:
         params_file = Path(tmp) / "params.json"
-        params_file.write_text(json.dumps(manifest.params, indent=2), encoding="utf-8")
+        params = json.loads(json.dumps(manifest.params))
+        replacements = {
+            item.path: str((manifest_dir / item.path).resolve())
+            for item in manifest.inputs
+            if not Path(item.path).is_absolute()
+        }
+
+        def relocate(value):
+            if isinstance(value, str):
+                return replacements.get(value, value)
+            if isinstance(value, list):
+                return [relocate(v) for v in value]
+            if isinstance(value, dict):
+                return {k: relocate(v) for k, v in value.items()}
+            return value
+
+        params_file.write_text(json.dumps(relocate(params), indent=2), encoding="utf-8")
         config_file = Path(tmp) / "pinned-containers.config"
         pins = []
         for container in manifest.containers:
@@ -74,7 +98,7 @@ def replay_run(
             log.warning("manifest has no usable container digests; replay cannot pin containers")
         result = runner_fn(
             repo=manifest.pipeline.name,
-            revision=manifest.pipeline.revision,
+            revision=manifest.pipeline.commit_sha or manifest.pipeline.revision,
             params_file=params_file,
             outdir=outdir,
             profile=manifest.profile,

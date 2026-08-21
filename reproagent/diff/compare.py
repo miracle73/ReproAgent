@@ -75,7 +75,13 @@ def _snippet(a: Path, b: Path) -> str | None:
     if ta is None or tb is None:
         return None
     lines = list(
-        difflib.unified_diff(ta.splitlines(), tb.splitlines(), fromfile="a/" + a.name, tofile="b/" + b.name, lineterm="")
+        difflib.unified_diff(
+            ta.splitlines(),
+            tb.splitlines(),
+            fromfile="a/" + a.name,
+            tofile="b/" + b.name,
+            lineterm="",
+        )
     )
     return "\n".join(lines[:SNIPPET_LINES]) if lines else None
 

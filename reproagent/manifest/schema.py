@@ -30,6 +30,7 @@ def new_run_id() -> str:
 
 class InputFile(BaseModel):
     path: str
+    original_path: str | None = None
     sha256: str | None = None
     size_bytes: int | None = None
     read_count: int | None = None
@@ -50,6 +51,7 @@ class ContainerInfo(BaseModel):
 class PipelineInfo(BaseModel):
     name: str
     revision: str | None = None
+    commit_sha: str | None = None
 
 
 class AgentDecisionTrace(BaseModel):
@@ -87,6 +89,7 @@ class RunManifest(BaseModel):
     agent_trace: AgentDecisionTrace = Field(default_factory=AgentDecisionTrace)
     llm: LLMInfo
     host_env: HostEnv
+
 
 def validate_manifest(data: dict[str, Any]) -> RunManifest:
     m = RunManifest.model_validate(data)

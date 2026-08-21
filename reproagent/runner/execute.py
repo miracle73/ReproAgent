@@ -43,6 +43,24 @@ def docker_version() -> str | None:
     return _run_capture(["docker", "version", "--format", "{{.Server.Version}}"], r"(\S+)")
 
 
+def resolve_revision(repo: str, revision: str) -> str | None:
+    """Resolve an nf-core release tag to its immutable Git commit."""
+    url = f"https://github.com/{repo}.git"
+    return _run_capture(
+        ["git", "ls-remote", url, f"refs/tags/{revision}^{{}}"], r"^([0-9a-f]{40})"
+    ) or _run_capture(["git", "ls-remote", url, f"refs/tags/{revision}"], r"^([0-9a-f]{40})")
+
+
+def docker_digest(image: str) -> str | None:
+    value = _run_capture(
+        ["docker", "image", "inspect", image, "--format", '{{join .RepoDigests "\\n"}}'],
+        r"@((?:sha256:)[0-9a-f]{64})",
+    )
+    if not value:
+        log.warning("could not resolve container digest for %s", image)
+    return value
+
+
 def run_nextflow(
     repo: str,
     revision: str | None,
@@ -61,6 +79,18 @@ def run_nextflow(
     if config_file:
         cmd += ["-c", str(config_file)]
     cmd += ["-profile", profile, "--outdir", str(outdir)]
+    provenance = Path(outdir) / "provenance"
+    provenance.mkdir(parents=True, exist_ok=True)
+    cmd += [
+        "-with-trace",
+        str(provenance / "trace.txt"),
+        "-with-report",
+        str(provenance / "report.html"),
+        "-with-timeline",
+        str(provenance / "timeline.html"),
+        "-with-dag",
+        str(provenance / "dag.html"),
+    ]
     if work_dir:
         cmd += ["-work-dir", str(work_dir)]
     cmd += list(extra_args)
@@ -101,7 +131,11 @@ def parse_containers(outdir: str | Path) -> list[dict[str, str | None]]:
                         digest = f"sha256:{digest}"
                     elif ":" in image:
                         image, tag = image.rsplit(":", 1)
-                    rows.append({"process": proc_name, "image": image, "tag": tag, "digest": digest})
+                    if not digest:
+                        digest = docker_digest(img)
+                    rows.append(
+                        {"process": proc_name, "image": image, "tag": tag, "digest": digest}
+                    )
         except OSError as exc:
             log.warning("unreadable trace %s: %s", trace, exc)
     if not rows:

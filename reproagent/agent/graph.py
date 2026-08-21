@@ -24,6 +24,8 @@ class AgentState(TypedDict, total=False):
     plan: dict[str, Any]
     result: dict[str, Any]
     decisions: list[dict[str, Any]]
+    model: str
+    temperature: float
 
 
 def _registry(s: AgentState) -> dict[str, Any]:
@@ -32,14 +34,27 @@ def _registry(s: AgentState) -> dict[str, Any]:
 
 
 def _inspect(s: AgentState) -> dict[str, Any]:
-    paths = s.get("input_paths") or re.findall(r"(?:[A-Za-z]:)?[^\s'\"]+\.(?:fastq|fq)(?:\.gz)?", s["request"], re.I)
+    paths = s.get("input_paths") or re.findall(
+        r"(?:[A-Za-z]:)?[^\s'\"]+\.(?:fastq|fq)(?:\.gz)?", s["request"], re.I
+    )
     values = [tools.inspect_input(p) for p in paths]
-    return {"input_paths": paths, "inspections": values, "decisions": s["decisions"] + [{"tool": "inspect_input", "output": values}]}
+    return {
+        "input_paths": paths,
+        "inspections": values,
+        "decisions": s["decisions"] + [{"tool": "inspect_input", "output": values}],
+    }
 
 
 def _plan(s: AgentState) -> dict[str, Any]:
-    plan = tools.plan_run(s["request"])
-    return {"plan": plan.model_dump(), "decisions": s["decisions"] + [{"tool": "plan_run", "output": plan.model_dump()}]}
+    plan = tools.plan_run(s["request"], s.get("model", "rule-based-v1"), s.get("temperature", 0.0))
+    if s.get("input_paths"):
+        plan.params["input"] = (
+            s["input_paths"][0] if len(s["input_paths"]) == 1 else s["input_paths"]
+        )
+    return {
+        "plan": plan.model_dump(),
+        "decisions": s["decisions"] + [{"tool": "plan_run", "output": plan.model_dump()}],
+    }
 
 
 def _execute(s: AgentState) -> dict[str, Any]:
@@ -51,7 +66,11 @@ def _execute(s: AgentState) -> dict[str, Any]:
     params_file.write_text(json.dumps(plan.params, indent=2), encoding="utf-8")
     result = tools.execute(plan, out, params_file)
     payload = {"exit_code": result.exit_code, "outdir": result.outdir, "log_tail": result.log_tail}
-    return {"plan": plan.model_dump(), "result": payload, "decisions": s["decisions"] + [{"tool": "execute", "output": payload}]}
+    return {
+        "plan": plan.model_dump(),
+        "result": payload,
+        "decisions": s["decisions"] + [{"tool": "execute", "output": payload}],
+    }
 
 
 def build_graph():

@@ -13,4 +13,7 @@ def test_diff_classifier(tmp_path):
     (b / "b.txt").write_text("b")
     result = compare_trees(a, b)
     assert result.summary == {"identical": 1, "differs": 1, "only-in-A": 1, "only-in-B": 1}
-    assert next(x for x in result.files if x.path == "changed.txt").cause == "thread-scheduling nondeterminism"
+    assert (
+        next(x for x in result.files if x.path == "changed.txt").cause
+        == "thread-scheduling nondeterminism"
+    )

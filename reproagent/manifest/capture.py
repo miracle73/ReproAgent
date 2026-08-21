@@ -66,6 +66,7 @@ def build_manifest(
     random_seeds: dict[str, int] | None = None,
     host_env: HostEnv | None = None,
     containers: list[ContainerInfo] | None = None,
+    commit_sha: str | None = None,
 ) -> RunManifest:
     containers = containers or [ContainerInfo(**row) for row in runner.parse_containers(outdir)]
     host_env = host_env or gather_host_env()
@@ -81,7 +82,7 @@ def build_manifest(
         schema_version="1.0.0",
         run_id=run_id,
         created_utc=created_utc,
-        pipeline=PipelineInfo(name=pipeline_name, revision=revision),
+        pipeline=PipelineInfo(name=pipeline_name, revision=revision, commit_sha=commit_sha),
         profile=profile,
         containers=containers,
         params=params,
