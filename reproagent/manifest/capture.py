@@ -11,6 +11,7 @@ from typing import Any
 from reproagent.diff.compare import sha256_file
 from reproagent.manifest.schema import (
     AgentDecisionTrace,
+    ConfigFile,
     ContainerInfo,
     HostEnv,
     InputFile,
@@ -67,6 +68,7 @@ def build_manifest(
     host_env: HostEnv | None = None,
     containers: list[ContainerInfo] | None = None,
     commit_sha: str | None = None,
+    configs: list[ConfigFile] | None = None,
 ) -> RunManifest:
     containers = containers or [ContainerInfo(**row) for row in runner.parse_containers(outdir)]
     host_env = host_env or gather_host_env()
@@ -86,6 +88,7 @@ def build_manifest(
         profile=profile,
         containers=containers,
         params=params,
+        configs=configs or [],
         reference_genome=reference_genome or ReferenceGenome(),
         inputs=inputs or [],
         random_seeds=random_seeds,

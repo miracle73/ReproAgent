@@ -19,6 +19,7 @@ class AgentState(TypedDict, total=False):
     request: str
     outdir: str
     input_paths: list[str]
+    config_paths: list[str]
     registry: dict[str, Any]
     inspections: list[dict[str, Any]]
     plan: dict[str, Any]
@@ -64,7 +65,8 @@ def _execute(s: AgentState) -> dict[str, Any]:
     plan.params["outdir"] = str(out)
     params_file = out / "params.json"
     params_file.write_text(json.dumps(plan.params, indent=2), encoding="utf-8")
-    result = tools.execute(plan, out, params_file)
+    config_paths = s.get("config_paths") or []
+    result = tools.execute(plan, out, params_file, config_paths)
     payload = {"exit_code": result.exit_code, "outdir": result.outdir, "log_tail": result.log_tail}
     return {
         "plan": plan.model_dump(),

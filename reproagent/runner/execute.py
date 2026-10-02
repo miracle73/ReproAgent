@@ -7,6 +7,7 @@ import logging
 import re
 import subprocess
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,8 +36,15 @@ def _run_capture(cmd: list[str], pattern: str) -> str | None:
     return m.group(1)
 
 
+# `nextflow -version` prints a banner whose first line is the word NEXTFLOW with
+# spaces between the letters ("N E X T F L O W") on some builds and
+# "NEXTFLOW version x.y.z" on others, with the version on its own line.
+_NEXTFLOW_VERSION_RE = r"(?:nextflow\s+)?version\s+(\S+)"
+_SHA_RE = r"^([0-9a-f]{40})"
+
+
 def nextflow_version() -> str | None:
-    return _run_capture(["nextflow", "-version"], r"nextflow version (\S+)")
+    return _run_capture(["nextflow", "-version"], _NEXTFLOW_VERSION_RE)
 
 
 def docker_version() -> str | None:
@@ -44,11 +52,37 @@ def docker_version() -> str | None:
 
 
 def resolve_revision(repo: str, revision: str) -> str | None:
-    """Resolve an nf-core release tag to its immutable Git commit."""
+    """Resolve an nf-core release tag to its immutable Git commit.
+
+    Annotated tags are asked for with the peeled ``refs/tags/<tag>^{}`` form and
+    lightweight tags with the plain form, in a single ls-remote call so an
+    absent peeled ref is not reported as a probe failure.
+    """
     url = f"https://github.com/{repo}.git"
-    return _run_capture(
-        ["git", "ls-remote", url, f"refs/tags/{revision}^{{}}"], r"^([0-9a-f]{40})"
-    ) or _run_capture(["git", "ls-remote", url, f"refs/tags/{revision}"], r"^([0-9a-f]{40})")
+    peeled = f"refs/tags/{revision}^{{}}"
+    plain = f"refs/tags/{revision}"
+    try:
+        proc = subprocess.run(
+            ["git", "ls-remote", url, plain, peeled],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("could not probe git ls-remote for %s: %s", url, exc)
+        return None
+    fallback: str | None = None
+    for line in proc.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        sha = sha.strip()
+        if ref.strip() == peeled:
+            return sha
+        if ref.strip() == plain and not fallback:
+            fallback = sha
+    if not fallback:
+        log.warning("git ls-remote found no %s in %s", plain, url)
+    return fallback
 
 
 def docker_digest(image: str) -> str | None:
@@ -61,6 +95,14 @@ def docker_digest(image: str) -> str | None:
     return value
 
 
+def _config_args(config_file: str | Path | Sequence[str | Path] | None) -> list[str]:
+    """Nextflow accepts repeated -c; a bare path is the common single-config case."""
+    if config_file is None:
+        return []
+    paths = [config_file] if isinstance(config_file, str | Path) else list(config_file)
+    return [arg for p in paths for arg in ("-c", str(p))]
+
+
 def run_nextflow(
     repo: str,
     revision: str | None,
@@ -68,7 +110,7 @@ def run_nextflow(
     outdir: str | Path,
     profile: str = DEFAULT_PROFILE,
     work_dir: str | Path | None = None,
-    config_file: str | Path | None = None,
+    config_file: str | Path | Sequence[str | Path] | None = None,
     extra_args: tuple[str, ...] = (),
 ) -> RunResult:
     cmd = ["nextflow", "run", repo]
@@ -76,8 +118,7 @@ def run_nextflow(
         cmd += ["-revision", revision]
     if params_file:
         cmd += ["-params-file", str(params_file)]
-    if config_file:
-        cmd += ["-c", str(config_file)]
+    cmd += _config_args(config_file)
     cmd += ["-profile", profile, "--outdir", str(outdir)]
     provenance = Path(outdir) / "provenance"
     provenance.mkdir(parents=True, exist_ok=True)

@@ -36,6 +36,15 @@ class InputFile(BaseModel):
     read_count: int | None = None
 
 
+class ConfigFile(BaseModel):
+    """A Nextflow config supplied by the operator, bundled so replay can reuse it."""
+
+    path: str
+    original_path: str | None = None
+    sha256: str | None = None
+    size_bytes: int | None = None
+
+
 class ReferenceGenome(BaseModel):
     id: str | None = None
     sha256: str | None = None
@@ -83,6 +92,7 @@ class RunManifest(BaseModel):
     profile: str
     containers: list[ContainerInfo] = Field(default_factory=list)
     params: dict[str, Any] = Field(default_factory=dict)
+    configs: list[ConfigFile] = Field(default_factory=list)
     reference_genome: ReferenceGenome = Field(default_factory=ReferenceGenome)
     inputs: list[InputFile] = Field(default_factory=list)
     random_seeds: dict[str, int] | None = None

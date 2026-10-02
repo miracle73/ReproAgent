@@ -11,10 +11,11 @@ import typer
 
 from reproagent.agent.graph import agent_graph
 from reproagent.agent.tools import SYSTEM_PROMPT
-from reproagent.diff.compare import compare_trees, to_markdown
+from reproagent.diff.compare import compare_trees, sha256_file, to_markdown
 from reproagent.manifest.capture import build_manifest, write_manifest
 from reproagent.manifest.schema import (
     AgentDecisionTrace,
+    ConfigFile,
     InputFile,
     LLMInfo,
     new_run_id,
@@ -38,10 +39,16 @@ def run(
     request: str,
     outdir: Path = typer.Option(...),
     input_path: list[Path] = typer.Option([], "--input"),
+    config_path: list[Path] = typer.Option([], "--config"),
     model: str = typer.Option("rule-based-v1"),
     temperature: float = typer.Option(0.0),
 ) -> None:
-    """Select and run a pipeline, then write its provenance manifest."""
+    """Select and run a pipeline, then write its provenance manifest.
+
+    --config takes Nextflow config files to apply (for example a small-host
+    resource override). They are copied into the bundle and checksummed so a
+    replay can reproduce the same launch without the original file.
+    """
     _logging()
     outdir.mkdir(parents=True, exist_ok=True)
     bundled: list[tuple[Path, Path]] = []
@@ -52,11 +59,20 @@ def run(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         bundled.append((source, target))
+    bundled_configs: list[tuple[Path, Path]] = []
+    for source in config_path:
+        if not source.is_file():
+            raise typer.BadParameter(f"config does not exist: {source}")
+        target = outdir / "configs" / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        bundled_configs.append((source, target))
     state = agent_graph.invoke(
         {
             "request": request,
             "outdir": str(outdir),
             "input_paths": [str(p.resolve()) for _, p in bundled],
+            "config_paths": [str(p.resolve()) for _, p in bundled_configs],
             "model": model,
             "temperature": temperature,
         }
@@ -84,6 +100,15 @@ def run(
                 relative if value == absolute else value for value in manifest_params["input"]
             ]
     commit_sha = resolve_revision(plan["pipeline"], plan["revision"])
+    manifest_configs = [
+        ConfigFile(
+            path=target.relative_to(outdir).as_posix(),
+            original_path=str(source.resolve()),
+            sha256=sha256_file(target),
+            size_bytes=target.stat().st_size,
+        )
+        for source, target in bundled_configs
+    ]
     manifest = build_manifest(
         new_run_id(),
         utc_now_iso(),
@@ -101,6 +126,7 @@ def run(
         ),
         inputs=manifest_inputs,
         commit_sha=commit_sha,
+        configs=manifest_configs,
     )
     path = write_manifest(manifest, outdir)
     typer.echo(json.dumps({"exit_code": state["result"]["exit_code"], "manifest": str(path)}))

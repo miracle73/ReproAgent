@@ -27,20 +27,28 @@ class ReplayResult(BaseModel):
     command: str
 
 
-def verify_inputs(manifest: RunManifest, base_dir: Path | None = None) -> bool:
+def _verify_entries(entries, base_dir: Path | None) -> bool:
     ok = True
-    for item in manifest.inputs:
+    for item in entries:
         p = Path(item.path)
         if not p.is_absolute() and base_dir:
             p = base_dir / p
         if not p.is_file():
-            log.warning("input missing at replay time: %s", item.path)
+            log.warning("bundled file missing at replay time: %s", item.path)
             ok = False
             continue
         if item.sha256 and not _checksum_matches(item, p):
-            log.warning("input checksum mismatch: %s", item.path)
+            log.warning("bundled file checksum mismatch: %s", item.path)
             ok = False
     return ok
+
+
+def verify_inputs(manifest: RunManifest, base_dir: Path | None = None) -> bool:
+    return _verify_entries(manifest.inputs, base_dir)
+
+
+def verify_configs(manifest: RunManifest, base_dir: Path | None = None) -> bool:
+    return _verify_entries(manifest.configs, base_dir)
 
 
 def _checksum_matches(item: InputFile, path: Path | None = None) -> bool:
@@ -64,8 +72,11 @@ def replay_run(
 
     manifest_dir = Path(manifest_path).resolve().parent
     inputs_ok = verify_inputs(manifest, manifest_dir)
+    configs_ok = verify_configs(manifest, manifest_dir)
     if not inputs_ok:
         raise ValueError("manifest bundle inputs are missing or fail checksum validation")
+    if not configs_ok:
+        raise ValueError("manifest bundle configs are missing or fail checksum validation")
 
     with TemporaryDirectory(prefix="reproagent-replay-") as tmp:
         params_file = Path(tmp) / "params.json"
@@ -75,6 +86,9 @@ def replay_run(
             for item in manifest.inputs
             if not Path(item.path).is_absolute()
         }
+        # The recorded params carry the original run's outdir; a replay must
+        # never write back into the directory it is trying to verify.
+        params["outdir"] = str(Path(outdir))
 
         def relocate(value):
             if isinstance(value, str):
@@ -96,13 +110,15 @@ def replay_run(
         config_file.write_text("process {\n" + "\n".join(pins) + "\n}\n", encoding="utf-8")
         if not pins:
             log.warning("manifest has no usable container digests; replay cannot pin containers")
+        configs = [str(config_file)]
+        configs += [str((manifest_dir / c.path).resolve()) for c in manifest.configs]
         result = runner_fn(
             repo=manifest.pipeline.name,
             revision=manifest.pipeline.commit_sha or manifest.pipeline.revision,
             params_file=params_file,
             outdir=outdir,
             profile=manifest.profile,
-            config_file=config_file,
+            config_file=configs,
         )
     cmd = (
         f"nextflow run {manifest.pipeline.name}"

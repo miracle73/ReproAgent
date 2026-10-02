@@ -6,6 +6,7 @@ import gzip
 import json
 import logging
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib import request as urlrequest
@@ -121,5 +122,16 @@ def plan_run(request: str, model: str = "rule-based-v1", temperature: float = 0.
     )
 
 
-def execute(plan: RunPlan, outdir: str | Path, params_file: str | Path) -> RunResult:
-    return run_nextflow(plan.pipeline, plan.revision, params_file, outdir)
+def execute(
+    plan: RunPlan,
+    outdir: str | Path,
+    params_file: str | Path,
+    config_paths: Sequence[str | Path] = (),
+) -> RunResult:
+    return run_nextflow(
+        plan.pipeline,
+        plan.revision,
+        params_file,
+        outdir,
+        config_file=list(config_paths) or None,
+    )
